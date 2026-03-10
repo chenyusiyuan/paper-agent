@@ -7,7 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     grobid_url: str = "http://localhost:8070"
-    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    embedding_model: str = "Qwen/Qwen3-Embedding-4B"
+    embedding_batch_size: int = 4
+    embedding_max_seq_length: int = 512
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     llm_api_key: str = ""
     llm_base_url: str = ""

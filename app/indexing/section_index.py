@@ -9,9 +9,20 @@ from app.indexing.vector_store import VectorStore
 
 
 class SectionIndex:
-    def __init__(self, data_dir: str, embedding_model: str) -> None:
+    def __init__(
+        self,
+        data_dir: str,
+        embedding_model: str,
+        embedding_batch_size: int = 4,
+        embedding_max_seq_length: int | None = 512,
+    ) -> None:
         indexes_dir = Path(data_dir) / "indexes"
-        self.vector_store = VectorStore(str(indexes_dir / "section_dense.faiss"), embedding_model)
+        self.vector_store = VectorStore(
+            str(indexes_dir / "section_dense.faiss"),
+            embedding_model,
+            embedding_batch_size=embedding_batch_size,
+            embedding_max_seq_length=embedding_max_seq_length,
+        )
         self.bm25_index = BM25Index(str(indexes_dir / "section_bm25.pkl"))
         self.metadata_path = indexes_dir / "section_meta.pkl"
         self.chunk_store: dict[str, SectionChunk] = {}

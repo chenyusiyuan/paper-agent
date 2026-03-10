@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
+from typing import ClassVar
 
 import faiss
 import numpy as np
@@ -13,10 +14,20 @@ logger = get_logger(__name__)
 
 
 class VectorStore:
-    def __init__(self, index_path: str, embedding_model: str) -> None:
+    _shared_models: ClassVar[dict[tuple[str, int | None], SentenceTransformer]] = {}
+
+    def __init__(
+        self,
+        index_path: str,
+        embedding_model: str,
+        embedding_batch_size: int = 4,
+        embedding_max_seq_length: int | None = 512,
+    ) -> None:
         self.index_path = Path(index_path)
         self.metadata_path = self.index_path.with_suffix(".pkl")
         self.embedding_model = embedding_model
+        self.embedding_batch_size = embedding_batch_size
+        self.embedding_max_seq_length = embedding_max_seq_length
         self._model: SentenceTransformer | None = None
         self._index: faiss.IndexFlatIP | None = None
         self._vector_dim: int | None = None
@@ -32,7 +43,15 @@ class VectorStore:
 
     def _load_model(self) -> SentenceTransformer:
         if self._model is None:
-            self._model = SentenceTransformer(self.embedding_model)
+            cache_key = (self.embedding_model, self.embedding_max_seq_length)
+            shared_model = self._shared_models.get(cache_key)
+            if shared_model is None:
+                logger.info("Loading embedding model %s", self.embedding_model)
+                shared_model = SentenceTransformer(self.embedding_model)
+                if self.embedding_max_seq_length is not None:
+                    shared_model.max_seq_length = self.embedding_max_seq_length
+                self._shared_models[cache_key] = shared_model
+            self._model = shared_model
         return self._model
 
     def _normalize(self, matrix: np.ndarray) -> np.ndarray:
@@ -48,7 +67,11 @@ class VectorStore:
             return np.zeros((0, dimension), dtype=np.float32)
 
         model = self._load_model()
-        encoded = model.encode(texts, convert_to_numpy=True)
+        encoded = model.encode(
+            texts,
+            batch_size=self.embedding_batch_size,
+            convert_to_numpy=True,
+        )
         embeddings = self._normalize(np.asarray(encoded, dtype=np.float32))
 
         if embeddings.size > 0 and self._vector_dim is None:

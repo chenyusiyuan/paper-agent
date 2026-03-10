@@ -25,12 +25,12 @@ M8 evaluation   ← M7
 
 ### M1: core（基础层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/core/schemas.py` | 全局数据结构定义 | — | `PaperMetadata`, `SectionChunk`, `AgentState`, `AgentResponse`, `IntentType(Enum)` |
-| `app/core/config.py` | 配置管理 | 环境变量 / .env | `Settings` (Pydantic BaseSettings): GROBID URL, embedding model path, FAISS index path, LLM API key, reranker model path |
-| `app/core/constants.py` | 常量定义 | — | `SECTION_TYPES`, `INTENT_TYPES`, `DEFAULT_TOP_K`, prompt 模板路径 |
-| `app/core/logger.py` | 日志 | — | 统一 logger |
+| 文件                    | 职责             | 输入            | 输出                                                                                                                     |
+| ----------------------- | ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `app/core/schemas.py`   | 全局数据结构定义 | —               | `PaperMetadata`, `SectionChunk`, `AgentState`, `AgentResponse`, `IntentType(Enum)`                                       |
+| `app/core/config.py`    | 配置管理         | 环境变量 / .env | `Settings` (Pydantic BaseSettings): GROBID URL, embedding model path, FAISS index path, LLM API key, reranker model path |
+| `app/core/constants.py` | 常量定义         | —               | `SECTION_TYPES`, `INTENT_TYPES`, `DEFAULT_TOP_K`, prompt 模板路径                                                        |
+| `app/core/logger.py`    | 日志             | —               | 统一 logger                                                                                                              |
 
 **schemas.py 核心定义：**
 
@@ -65,12 +65,16 @@ class PaperMetadata:
 class SectionChunk:
     chunk_id: str
     paper_id: str
-    section_type: str       # method / experiment / conclusion ...
-    section_title: str
+    section_type: str           # 归一化类型: method / experiment / conclusion / other ...
+    section_title: str          # 原始标题，如 "3.1 Model Architecture"
+    section_path: str           # 完整路径，如 "3 Methodology > 3.1 Model Architecture"
     text: str
     page_start: int
     page_end: int
-    order_in_paper: int
+    order_in_paper: int         # 在全文中的全局顺序，用于邻接窗口
+    level: int                  # 层级深度，0 = 顶级 section，1 = subsection
+    parent_chunk_id: str | None # 父 chunk id，顶级为 None
+    granularity: str            # "coarse"（顶级大节聚合）| "fine"（子节/段落）
 
 @dataclass
 class AgentState:
@@ -101,13 +105,14 @@ class AgentResponse:
 
 ### M2: parsing（PDF 解析层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/parsing/grobid_runner.py` | 调用 GROBID REST API | `pdf_path: str` | `tei_xml: str` (原始 TEI/XML) |
-| `app/parsing/tei_parser.py` | 解析 TEI/XML 为结构化数据 | `tei_xml: str` | `PaperMetadata` + `list[SectionChunk]` |
-| `app/parsing/paper_normalizer.py` | section_type 归一化 | 原始 section title | 标准 section_type (`method`/`experiment`/...) |
+| 文件                              | 职责                      | 输入               | 输出                                          |
+| --------------------------------- | ------------------------- | ------------------ | --------------------------------------------- |
+| `app/parsing/grobid_runner.py`    | 调用 GROBID REST API      | `pdf_path: str`    | `tei_xml: str` (原始 TEI/XML)                 |
+| `app/parsing/tei_parser.py`       | 解析 TEI/XML 为结构化数据 | `tei_xml: str`     | `PaperMetadata` + `list[SectionChunk]`        |
+| `app/parsing/paper_normalizer.py` | section_type 归一化       | 原始 section title | 标准 section_type (`method`/`experiment`/...) |
 
 **grobid_runner.py 核心逻辑：**
+
 ```
 1. 读取 PDF 文件为 bytes
 2. POST 到 GROBID /api/processFulltextDocument
@@ -116,15 +121,28 @@ class AgentResponse:
 ```
 
 **tei_parser.py 核心逻辑：**
+
 ```
 1. 用 lxml 解析 TEI/XML
 2. 从 <teiHeader> 提取: title, authors, abstract, keywords, year, venue
-3. 从 <body> 的 <div> 遍历提取 sections: section_title + paragraphs
-4. 生成 paper_id (基于 title hash 或 PDF 文件名)
-5. 为每个 section 生成 SectionChunk, 自动推断 section_type
+3. 从 <body> 递归遍历所有嵌套 <div>，构建 section tree:
+   a. 顶级 <div>（body 的直接子节点）→ 生成 coarse chunk
+      - coarse chunk 的 text = 该 div 下所有 <p> 的递归文本（含子 div 的所有段落）
+      - level = 0, parent_chunk_id = None, granularity = "coarse"
+   b. 子 <div>（嵌套在顶级 div 内）→ 生成 fine chunk
+      - fine chunk 的 text = 只取该 <div> 直接子 <p>（避免重复，子 div 各自负责自己）
+      - level = 1（或更深），parent_chunk_id = 父 coarse chunk 的 chunk_id
+      - granularity = "fine"
+   c. section_path 格式: 父标题 + " > " + 当前标题，如 "3 Methodology > 3.1 Model"
+   d. order_in_paper 按全局遍历顺序递增（coarse 和 fine 共用一个全局计数器）
+4. 过滤规则：
+   - references / acknowledgment / appendix → section_type = "other"，依然入库但标记低优先级
+   - text 为空的 chunk 不生成
+5. 生成 paper_id (基于 title hash 或 PDF 文件名)
 ```
 
 **paper_normalizer.py 核心逻辑：**
+
 ```
 映射表 + 模糊匹配：
 "Introduction" / "1. Introduction" / "INTRODUCTION" → "introduction"
@@ -140,14 +158,15 @@ class AgentResponse:
 
 ### M3: indexing（索引层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/indexing/vector_store.py` | FAISS 向量索引封装 | embedding vectors + metadata | FAISS index (持久化到 `data/indexes/`) |
-| `app/indexing/bm25_index.py` | BM25 稀疏索引封装 | 文本 + doc_ids | BM25 index (pickle 持久化) |
-| `app/indexing/paper_index.py` | 论文级索引构建与检索 | `list[PaperMetadata]` | 论文级 dense + BM25 索引 |
-| `app/indexing/section_index.py` | 章节级索引构建与检索 | `list[SectionChunk]` | 章节级 dense + BM25 索引 |
+| 文件                            | 职责                 | 输入                         | 输出                                   |
+| ------------------------------- | -------------------- | ---------------------------- | -------------------------------------- |
+| `app/indexing/vector_store.py`  | FAISS 向量索引封装   | embedding vectors + metadata | FAISS index (持久化到 `data/indexes/`) |
+| `app/indexing/bm25_index.py`    | BM25 稀疏索引封装    | 文本 + doc_ids               | BM25 index (pickle 持久化)             |
+| `app/indexing/paper_index.py`   | 论文级索引构建与检索 | `list[PaperMetadata]`        | 论文级 dense + BM25 索引               |
+| `app/indexing/section_index.py` | 章节级索引构建与检索 | `list[SectionChunk]`         | 章节级 dense + BM25 索引               |
 
 **vector_store.py 接口：**
+
 ```python
 class VectorStore:
     def __init__(self, index_path: str, embedding_model: str)
@@ -158,6 +177,7 @@ class VectorStore:
 ```
 
 **bm25_index.py 接口：**
+
 ```python
 class BM25Index:
     def __init__(self, index_path: str)
@@ -168,6 +188,7 @@ class BM25Index:
 ```
 
 **paper_index.py 接口：**
+
 ```python
 class PaperIndex:
     def __init__(self, vector_store: VectorStore, bm25: BM25Index, metadata_store: dict)
@@ -175,11 +196,13 @@ class PaperIndex:
     def search(self, query: str, top_k: int = 5) -> list[PaperMetadata]
     def get_by_id(self, paper_id: str) -> PaperMetadata | None
 ```
+
 - dense 检索字段: `title + " " + abstract + " " + " ".join(keywords)`
 - BM25 检索字段: 同上
 - metadata_store: `dict[paper_id, PaperMetadata]` (SQLite 或 JSON 文件)
 
 **section_index.py 接口：**
+
 ```python
 class SectionIndex:
     def __init__(self, vector_store: VectorStore, bm25: BM25Index)
@@ -188,6 +211,7 @@ class SectionIndex:
                target_sections: list[str] | None = None,
                top_k: int = 5) -> list[SectionChunk]
 ```
+
 - dense 检索字段: `section_title + ": " + text`
 - 支持按 paper_id 过滤、按 section_type 过滤
 
@@ -195,14 +219,15 @@ class SectionIndex:
 
 ### M4: retrieval（检索策略层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/retrieval/paper_retriever.py` | 论文级检索策略 | query | `list[PaperMetadata]` (ranked) |
-| `app/retrieval/section_retriever.py` | 章节级检索策略 | query + paper_id + target_sections | `list[SectionChunk]` (ranked) |
-| `app/retrieval/fusion.py` | dense + BM25 分数融合 | 两路召回结果 | 融合排序结果 |
-| `app/retrieval/reranker.py` | reranker 封装 | query + candidates | reranked candidates |
+| 文件                                 | 职责                  | 输入                               | 输出                           |
+| ------------------------------------ | --------------------- | ---------------------------------- | ------------------------------ |
+| `app/retrieval/paper_retriever.py`   | 论文级检索策略        | query                              | `list[PaperMetadata]` (ranked) |
+| `app/retrieval/section_retriever.py` | 章节级检索策略        | query + paper_id + target_sections | `list[SectionChunk]` (ranked)  |
+| `app/retrieval/fusion.py`            | dense + BM25 分数融合 | 两路召回结果                       | 融合排序结果                   |
+| `app/retrieval/reranker.py`          | reranker 封装         | query + candidates                 | reranked candidates            |
 
 **fusion.py 核心逻辑：**
+
 ```
 Reciprocal Rank Fusion (RRF):
   score(doc) = Σ 1 / (k + rank_i(doc))  for each retriever i
@@ -210,6 +235,7 @@ Reciprocal Rank Fusion (RRF):
 ```
 
 **reranker.py 接口：**
+
 ```python
 class Reranker:
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3")
@@ -217,6 +243,7 @@ class Reranker:
 ```
 
 **paper_retriever.py 核心流程：**
+
 ```
 1. dense 检索 paper_index top_20
 2. BM25 检索 paper_index top_20
@@ -226,6 +253,7 @@ class Reranker:
 ```
 
 **section_retriever.py 核心流程：**
+
 ```
 1. 在 section_index 中按 paper_id 过滤
 2. 如果有 target_sections, 按 section_type 过滤
@@ -239,14 +267,15 @@ class Reranker:
 
 ### M5: agent（Agent 决策层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/agent/intent_router.py` | 意图识别 | user query + AgentState | `IntentType` |
-| `app/agent/state_manager.py` | 状态流转 + 回退 | IntentType + AgentState | updated `AgentState` |
-| `app/agent/tools.py` | 3 个工具函数封装 | 各工具参数 | 工具返回结果 |
-| `app/agent/orchestrator.py` | Agent 主循环 | user query + AgentState | `AgentResponse` |
+| 文件                         | 职责             | 输入                    | 输出                 |
+| ---------------------------- | ---------------- | ----------------------- | -------------------- |
+| `app/agent/intent_router.py` | 意图识别         | user query + AgentState | `IntentType`         |
+| `app/agent/state_manager.py` | 状态流转 + 回退  | IntentType + AgentState | updated `AgentState` |
+| `app/agent/tools.py`         | 3 个工具函数封装 | 各工具参数              | 工具返回结果         |
+| `app/agent/orchestrator.py`  | Agent 主循环     | user query + AgentState | `AgentResponse`      |
 
 **intent_router.py 核心逻辑：**
+
 ```
 使用 LLM 做 few-shot 分类:
 
@@ -289,6 +318,7 @@ ANSWERING     —               → ROUTING       保留 paper_id (等下轮)
 ```
 
 **tools.py 三个工具函数：**
+
 ```python
 def search_papers(query: str, top_k: int = 3) -> list[PaperMetadata]:
     """调用 paper_retriever"""
@@ -303,6 +333,7 @@ def retrieve_sections(paper_id: str, query: str,
 ```
 
 **orchestrator.py 主循环（单轮）：**
+
 ```
 def run_agent(query: str, state: AgentState) -> AgentResponse:
     # 1. 意图识别
@@ -357,11 +388,11 @@ def run_agent(query: str, state: AgentState) -> AgentResponse:
 
 ### M6: generation（生成层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/generation/prompts.py` | prompt 模板 | — | 模板字符串 |
-| `app/generation/answer_builder.py` | 调用 LLM 生成回答 | query + evidences + state | 结构化 answer string |
-| `app/generation/citation_formatter.py` | 引用格式化 | evidences | 带 [1][2] 标记的引用文本 |
+| 文件                                   | 职责              | 输入                      | 输出                     |
+| -------------------------------------- | ----------------- | ------------------------- | ------------------------ |
+| `app/generation/prompts.py`            | prompt 模板       | —                         | 模板字符串               |
+| `app/generation/answer_builder.py`     | 调用 LLM 生成回答 | query + evidences + state | 结构化 answer string     |
+| `app/generation/citation_formatter.py` | 引用格式化        | evidences                 | 带 [1][2] 标记的引用文本 |
 
 **prompts.py 核心模板：**
 
@@ -411,6 +442,7 @@ INTENT_CLASSIFICATION_PROMPT = """...(见 intent_router.py 描述)"""
 ```
 
 **answer_builder.py 接口：**
+
 ```python
 class AnswerBuilder:
     def __init__(self, llm_client)
@@ -426,14 +458,15 @@ class AnswerBuilder:
 
 ### M7: api + services（服务层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/services/ingest_service.py` | 论文入库流程 | PDF 目录路径 | 解析 + 索引完成 |
-| `app/services/qa_service.py` | 问答主服务 | query + session_id | AgentResponse |
-| `app/api/routes.py` | FastAPI 路由 | HTTP request | HTTP response |
-| `app/api/deps.py` | 依赖注入 | — | 全局单例 (indexes, llm_client, reranker) |
+| 文件                             | 职责         | 输入               | 输出                                     |
+| -------------------------------- | ------------ | ------------------ | ---------------------------------------- |
+| `app/services/ingest_service.py` | 论文入库流程 | PDF 目录路径       | 解析 + 索引完成                          |
+| `app/services/qa_service.py`     | 问答主服务   | query + session_id | AgentResponse                            |
+| `app/api/routes.py`              | FastAPI 路由 | HTTP request       | HTTP response                            |
+| `app/api/deps.py`                | 依赖注入     | —                  | 全局单例 (indexes, llm_client, reranker) |
 
 **ingest_service.py 流程：**
+
 ```
 def ingest_papers(pdf_dir: str):
     1. glob 所有 *.pdf
@@ -447,6 +480,7 @@ def ingest_papers(pdf_dir: str):
 ```
 
 **qa_service.py 流程：**
+
 ```
 class QAService:
     sessions: dict[str, AgentState]  # session_id → state
@@ -459,6 +493,7 @@ class QAService:
 ```
 
 **routes.py 路由：**
+
 ```
 POST /api/ingest         — 触发论文入库
 POST /api/chat           — {query: str, session_id: str} → AgentResponse
@@ -470,18 +505,26 @@ GET  /api/papers/{id}    — 获取单篇论文 metadata
 
 ### M8: evaluation（评测层）
 
-| 文件 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| `app/evaluation/dataset_builder.py` | 评测集加载 | `data/eval/evalset.jsonl` | `list[EvalSample]` |
-| `app/evaluation/llm_judge.py` | LLM-as-a-Judge 打分 | question + answer + gold_answer | faithfulness score + relevance score |
-| `app/evaluation/baseline_compare.py` | flat RAG baseline + A/B 对比 | 评测集 | 对比结果表 |
+| 文件                                 | 职责                         | 输入                            | 输出                                 |
+| ------------------------------------ | ---------------------------- | ------------------------------- | ------------------------------------ |
+| `app/evaluation/dataset_builder.py`  | 评测集加载                   | `data/eval/evalset.jsonl`       | `list[EvalSample]`                   |
+| `app/evaluation/llm_judge.py`        | LLM-as-a-Judge 打分          | question + answer + gold_answer | faithfulness score + relevance score |
+| `app/evaluation/baseline_compare.py` | flat RAG baseline + A/B 对比 | 评测集                          | 对比结果表                           |
 
 **evalset.jsonl 格式：**
+
 ```json
-{"question": "...", "intent_type": "paper_search", "gold_paper_ids": ["p1"], "gold_section_ids": [], "gold_answer": "..."}
+{
+  "question": "...",
+  "intent_type": "paper_search",
+  "gold_paper_ids": ["p1"],
+  "gold_section_ids": [],
+  "gold_answer": "..."
+}
 ```
 
 **llm_judge.py 核心逻辑：**
+
 ```python
 JUDGE_PROMPT = """你是一个评测专家。请对下面的回答打分。
 
@@ -505,6 +548,7 @@ class LLMJudge:
 ```
 
 **baseline_compare.py 核心逻辑：**
+
 ```python
 class FlatRAGBaseline:
     """flat chunking (500 tokens, 50 overlap) + top-5 检索 + 直接生成"""
@@ -695,14 +739,14 @@ tests/
 
 ### 5.2 集成测试
 
-| 测试 | 描述 | 验证点 |
-|------|------|--------|
-| `test_ingest_pipeline` | 放入 1 篇真实 PDF, 走完解析+索引流程 | 解析出 metadata, sections 非空; 索引可检索 |
-| `test_search_flow` | 入库后查询 "self-rag" | 返回候选论文, 包含正确论文 |
-| `test_reading_flow` | 锁定论文后 "讲讲这篇论文" | 返回结构化解读, evidences 非空 |
-| `test_section_qa_flow` | 锁定论文后 "方法部分讲讲" | 返回方法相关内容 |
-| `test_multi_turn` | 找论文 → 锁定 → 解读 → 追问方法 → 追问实验 | 状态正确流转, 每轮返回合理 |
-| `test_state_rollback` | 在解读中途问一篇新论文 | 状态回退到 SEARCHING |
+| 测试                   | 描述                                       | 验证点                                     |
+| ---------------------- | ------------------------------------------ | ------------------------------------------ |
+| `test_ingest_pipeline` | 放入 1 篇真实 PDF, 走完解析+索引流程       | 解析出 metadata, sections 非空; 索引可检索 |
+| `test_search_flow`     | 入库后查询 "self-rag"                      | 返回候选论文, 包含正确论文                 |
+| `test_reading_flow`    | 锁定论文后 "讲讲这篇论文"                  | 返回结构化解读, evidences 非空             |
+| `test_section_qa_flow` | 锁定论文后 "方法部分讲讲"                  | 返回方法相关内容                           |
+| `test_multi_turn`      | 找论文 → 锁定 → 解读 → 追问方法 → 追问实验 | 状态正确流转, 每轮返回合理                 |
+| `test_state_rollback`  | 在解读中途问一篇新论文                     | 状态回退到 SEARCHING                       |
 
 ### 5.3 验收测试（手动）
 
@@ -1227,4 +1271,24 @@ httpx>=0.25.0
 8. 异常处理: 只在边界捕获 (API 层, 外部服务调用), 内部让异常传播
 9. 测试: 外部依赖一律 mock (GROBID API, LLM API, reranker model), 索引测试可用小数据集
 10. 不要创建 __main__.py, 入口统一在 scripts/ 或 app/main.py / app/demo.py
+
+=== 以下为强制禁止项 (违反过的问题, 绝对不能再犯) ===
+
+11. 禁止对 requirements.txt 中的硬依赖做 try/except ImportError fallback.
+    faiss, sentence-transformers, pydantic-settings, FlagEmbedding 等都是硬依赖,
+    直接 import, 缺失就让程序崩溃. 不要写任何 fallback 实现 (如 hash 伪 embedding,
+    手动模拟 BaseSettings 等). 这类 fallback 会制造静默错误, 线上排查极其困难.
+
+12. 禁止在索引层 (indexing/) 做检索结果融合. dense/BM25 分数不同尺度, 不能直接比较
+    或取 max. 融合 (RRF) 统一在 retrieval/ 完成.
+
+13. 禁止用 rank_bm25 以外的方式自行实现 BM25.
+
+14. 索引层的 Index 类不要提供融合后的便捷 search() 方法.
+
+15. tei_parser.py 禁止只取顶级 div 的直接子 <p>. 必须递归解析嵌套 <div>, 为每个子
+    章节单独生成 fine chunk. coarse chunk 的 text 需包含该顶级 section 下全部段落
+    的聚合文本 (递归). fine chunk 的 text 只取自身直接子 <p>, 不重复子 div 内容.
+    任何 "只取一级" 或 "只取 ./tei:p 直接子节点" 的实现都是错的.
+
 ```

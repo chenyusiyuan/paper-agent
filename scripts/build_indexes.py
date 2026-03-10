@@ -31,8 +31,18 @@ def build_indexes() -> None:
     parsed_dir = Path(settings.data_dir) / "parsed"
     papers, chunks = load_parsed_data(parsed_dir)
 
-    paper_index = PaperIndex(settings.data_dir, settings.embedding_model)
-    section_index = SectionIndex(settings.data_dir, settings.embedding_model)
+    paper_index = PaperIndex(
+        settings.data_dir,
+        settings.embedding_model,
+        embedding_batch_size=settings.embedding_batch_size,
+        embedding_max_seq_length=settings.embedding_max_seq_length,
+    )
+    section_index = SectionIndex(
+        settings.data_dir,
+        settings.embedding_model,
+        embedding_batch_size=settings.embedding_batch_size,
+        embedding_max_seq_length=settings.embedding_max_seq_length,
+    )
     paper_index.build(papers)
     section_index.build(chunks)
 
