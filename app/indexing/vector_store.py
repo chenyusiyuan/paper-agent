@@ -85,6 +85,8 @@ class VectorStore:
             return
 
         embeddings = self._encode(texts)
+        if self._vector_dim is None and embeddings.size > 0:
+            self._vector_dim = int(embeddings.shape[1])
 
         if self._index is None:
             if self._vector_dim is None:
