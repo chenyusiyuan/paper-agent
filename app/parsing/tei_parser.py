@@ -379,6 +379,7 @@ class TeiParser:
             "introduction": "Introduction",
             "method": "Method",
             "experiment": "Experiments",
+            "ablation": "Ablation Study",
             "related_work": "Related Work",
             "conclusion": "Conclusion",
         }

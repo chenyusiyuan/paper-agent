@@ -16,6 +16,7 @@ def normalize_section_type(title: str) -> str:
         "experiment",
         "evaluation",
         "result",
+        "ablation",
         "related work",
         "background",
         "conclusion",

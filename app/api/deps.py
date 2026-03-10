@@ -3,18 +3,13 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.agent import AgentTools, IntentRouter, Orchestrator, StateManager
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.generation import AnswerBuilder
 from app.indexing import PaperIndex, SectionIndex
 from app.retrieval.paper_retriever import PaperRetriever
 from app.retrieval.reranker import Reranker
 from app.retrieval.section_retriever import SectionRetriever
 from app.services import IngestService, QAService
-
-
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
 
 
 @lru_cache(maxsize=1)

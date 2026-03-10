@@ -132,11 +132,30 @@ METADATA_OVERRIDES: dict[str, dict[str, str | int]] = {
 TITLE_OVERRIDES = {
     "paper-020": "RQ-RAG: LEARNING TO REFINE QUERIES FOR RETRIEVAL AUGMENTED GENERATION",
     "paper-021": "DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads",
+    "paper-024": "CORRECTIVE RETRIEVAL AUGMENTED GENERATION",
     "paper-026": "RA-DIT: RETRIEVAL-AUGMENTED DUAL INSTRUCTION TUNING",
     "paper-030": "xRAG: Extreme Context Compression for Retrieval-Augmented Generation with One Token",
 }
 
 AUTHOR_OVERRIDES = {
+    "paper-005": [
+        "Zhengbao Jiang",
+        "Frank F Xu",
+        "Luyu Gao",
+        "Zhiqing Sun",
+        "Qian Liu",
+        "Jane Dwivedi-Yu",
+        "Yiming Yang",
+        "Jamie Callan",
+        "Graham Neubig",
+    ],
+    "paper-010": [
+        "Zhuowan Li",
+        "Cheng Li",
+        "Mingyang Zhang",
+        "Qiaozhu Mei",
+        "Michael Bendersky",
+    ],
     "paper-014": [
         "Nelson F Liu",
         "Kevin Lin",
@@ -341,6 +360,15 @@ AUTHOR_OVERRIDES = {
         "Defu Lian",
         "Zhicheng Dou",
     ],
+    "paper-017": [
+        "Yupeng Hou",
+        "Junjie Zhang",
+        "Zihan Lin",
+        "Hongyu Lu",
+        "Ruobing Xie",
+        "Julian McAuley",
+        "Wayne Xin Zhao",
+    ],
     "paper-026": [
         "Xi Victoria Lin",
         "Xilun Chen",
@@ -521,6 +549,407 @@ def _clean_title(title: str) -> str:
     return cleaned
 
 
+def _reindex_sections(paper_id: str, sections: list[dict[str, object]]) -> list[dict[str, object]]:
+    for index, section in enumerate(sections):
+        section["chunk_id"] = f"{paper_id}_sec_{index}"
+        section["paper_id"] = paper_id
+        section["order_in_paper"] = index
+    return sections
+
+
+def _clean_inline_block(text: str, pattern: str, replacement: str = "") -> str:
+    return re.sub(pattern, replacement, text, flags=re.DOTALL)
+
+
+def _apply_known_payload_repairs(
+    metadata: dict[str, object],
+    sections: list[dict[str, object]],
+    paper_id: str,
+) -> list[dict[str, object]]:
+    by_order = {
+        int(section.get("order_in_paper", -1)): section
+        for section in sections
+        if isinstance(section, dict)
+    }
+
+    if paper_id == "paper-005" and 0 in by_order and 2 in by_order:
+        intro = str(by_order[0].get("text", ""))
+        intro_prefix = intro.split(
+            "For example, to generate a summary about a particular topic, the initial retrieval based on the topic name",
+            1,
+        )[0]
+        intro_continuation = str(by_order[2].get("text", ""))
+        if "details." in intro_continuation:
+            intro_continuation = intro_continuation.split("details.", 1)[1].strip()
+        by_order[0]["text"] = (
+            intro_prefix
+            + "For example, to generate a summary about a particular topic, the initial retrieval based on the topic name "
+            + "(e.g., Joe Biden) may not cover all aspects and details.\n"
+            + intro_continuation
+        ).strip()
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in {1, 2}]
+
+    if paper_id == "paper-012":
+        if 0 in by_order:
+            text = str(by_order[0].get("text", ""))
+            text = re.sub(
+                r"Figure 1 : QA performance .*? base LLM\.\s*",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+            text = re.sub(
+                r",\s*furthermore,\s*In response to a query,.*?classifier\.\s*often",
+                ", furthermore, often",
+                text,
+                flags=re.DOTALL,
+            )
+            by_order[0]["text"] = text.strip()
+        if 6 in by_order:
+            datasets_text = str(by_order[6].get("text", ""))
+            datasets_text = re.sub(
+                r"Table 1 : Averaged results .*? easy comparisons\.\s*",
+                "",
+                datasets_text,
+                flags=re.DOTALL,
+            )
+            if 7 in by_order:
+                continuation = re.sub(
+                    r"^FLAN-T5-XXL \(11B\) GPT-3\.5 \(Turbo\)\s*",
+                    "",
+                    str(by_order[7].get("text", "")),
+                )
+                datasets_text = f"{datasets_text.rstrip()}\n{continuation.strip()}".strip()
+            by_order[6]["text"] = datasets_text
+        if 10 in by_order and 11 in by_order:
+            extra = re.sub(
+                r"^Figure 3 : .*?\(Right\)\.\s*",
+                "",
+                str(by_order[11].get("text", "")),
+                flags=re.DOTALL,
+            )
+            by_order[10]["text"] = f"{str(by_order[10].get('text', '')).rstrip()}{extra}"
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in {7, 11}]
+
+    if paper_id == "paper-015" and 0 in by_order and 2 in by_order:
+        intro = str(by_order[0].get("text", ""))
+        intro_prefix = intro.split("Can you find me some interesting things to do?", 1)[0]
+        intro_continuation = str(by_order[2].get("text", ""))
+        intro_continuation = re.sub(r"^Figure 1 : .*?\.\s*", "", intro_continuation, flags=re.DOTALL)
+        by_order[0]["text"] = f"{intro_prefix}{intro_continuation}".strip()
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in {1, 2}]
+
+    if paper_id == "paper-016":
+        if 45 in by_order:
+            by_order[45]["text"] = _clean_inline_block(
+                str(by_order[45].get("text", "")),
+                r"More details on the hyperparameters and .*?development set results are reported in Appendix A\.3\.\s*",
+                "More details on the hyperparameters and development set results are reported in Appendix A.3. ",
+            ).strip()
+        if 47 in by_order:
+            text = str(by_order[47].get("text", ""))
+            text = text.replace(
+                "As [0, 1) [1, 2) [2, 4) [4, 8) [8, 16) [16 shown in the left panel of Figure 3 ,",
+                "As shown in the left panel of Figure 3,",
+            )
+            text = text.replace(
+                " 6. Note: Depending on the question, it may not be important or useful to retrieve the exact text of the answer in MMLU, and as such, a hits@k value of 30% does not imply that retrieval fails to surface useful information in 70% of cases",
+                "",
+            )
+            by_order[47]["text"] = text.strip()
+        if 48 in by_order:
+            text = str(by_order[48].get("text", ""))
+            text = _clean_inline_block(
+                text,
+                r"for example, Question: Theo Walcott plays for ___ Answer: Arsenal F\.C\. \( 2017 Using this data set,",
+                (
+                    "for example, Question: Theo Walcott plays for ___ Answer: Arsenal F.C. (2017), "
+                    "Everton F.C. (2020), and form a small training set of 248 training, 112 development "
+                    "and 806 test questions.\nUsing this data set,"
+                ),
+            )
+            text = _clean_inline_block(
+                text,
+                r"Table 12 : Impact of index data temporality on Natural Questions\..*?leads to the best result\.\s*",
+                "",
+            )
+            by_order[48]["text"] = text.strip()
+        if 51 in by_order:
+            by_order[51]["text"] = _clean_inline_block(
+                str(by_order[51].get("text", "")),
+                r"Table 13 : MMLU scores with de-biasing\.\s*$",
+                "",
+            ).strip()
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in {3, 4}]
+
+    if paper_id == "paper-017":
+        metadata["abstract"] = str(metadata.get("abstract", "")).replace(
+            "Recently, large language models (LLMs) (e.g., have",
+            "Recently, large language models (LLMs) (e.g., GPT-4) have",
+            1,
+        )
+        if 0 in by_order and 2 in by_order:
+            appendix_finding = str(by_order[2].get("text", ""))
+            appendix_finding = appendix_finding.replace("Ranking w/ LLMs (e.g. ChatGPT)", "")
+            appendix_finding = appendix_finding.replace("Parsing outputs", "")
+            appendix_finding = appendix_finding.replace("🏅 🥈 🥉", "")
+            appendix_finding = appendix_finding.strip()
+            by_order[0]["text"] = f"{str(by_order[0].get('text', '')).rstrip()}\n{appendix_finding}"
+        for order in (3, 5):
+            if order not in by_order:
+                continue
+            text = str(by_order[order].get("text", ""))
+            text = re.sub(r"^Historical User Behaviors\?\s*", "", text)
+            text = text.replace(
+                "Historical User Behaviors? In LLM-based methods, historical interactions are naturally arranged in an ordered sequence.",
+                "In LLM-based methods, historical interactions are naturally arranged in an ordered sequence.",
+                1,
+            )
+            text = _clean_inline_block(
+                text,
+                r"Table 2 : Performance comparison on randomly retrieved candidates\..*?$",
+                "",
+            )
+            by_order[order]["text"] = text.strip()
+        for order in (6, 8, 10):
+            if order in by_order:
+                by_order[order]["text"] = re.sub(
+                    r"^N@1 N@5 N@10 N@20 N@1 N@5 N@10 N@20\s*",
+                    "",
+                    str(by_order[order].get("text", "")),
+                ).strip()
+        if 7 in by_order:
+            by_order[7]["text"] = str(by_order[7].get("text", "")).replace(
+                "usually will not 0 5 10 15 20 Ground-Truth Item Pos. affect",
+                "usually will not affect",
+            )
+        if 9 in by_order:
+            by_order[9]["text"] = str(by_order[9].get("text", "")).replace(
+                "We follow the same setting in Section items are randomly retrieved.",
+                "We follow the same setting in Section 3.1 where items are randomly retrieved.",
+            )
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in {1, 2}]
+
+    if paper_id == "paper-024":
+        banner = "Under review as a conference paper at ICLR 2025"
+        for section in sections:
+            text = str(section.get("text", ""))
+            section["text"] = text.replace(banner, "").strip()
+        if 3 in by_order:
+            text = str(by_order[3].get("text", ""))
+            if "After optimizing the retrieval results, an arbitrary generative model can be adopted." in text:
+                text = text.split(
+                    "After optimizing the retrieval results, an arbitrary generative model can be adopted.",
+                    1,
+                )[0] + "After optimizing the retrieval results, an arbitrary generative model can be adopted."
+            by_order[3]["text"] = text.strip()
+        if 16 in by_order:
+            text = str(by_order[16].get("text", ""))
+            text = _clean_inline_block(text, r"PopQA \(Mallen et al\., 2023\).*", "")
+            by_order[16]["text"] = text.strip()
+
+    if paper_id == "paper-003" and 13 in by_order:
+        by_order[13]["text"] = _clean_inline_block(
+            str(by_order[13].get("text", "")),
+            r"Table 6 : .*",
+            "",
+        ).strip()
+
+    if paper_id == "paper-010" and 5 in by_order:
+        by_order[5]["text"] = _clean_inline_block(
+            str(by_order[5].get("text", "")),
+            r"\s*Table 1 : Results of Gemini-1\.5-Pro, GPT-3\.5-Turbo, and GPT-4O using the Contriever retriever\..*?much less tokens\.\s*most queries,",
+            " Most queries,",
+        ).strip()
+
+    if paper_id == "paper-011":
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) != 16]
+
+    if paper_id == "paper-013" and 14 in by_order:
+        by_order[14]["text"] = _clean_inline_block(
+            str(by_order[14].get("text", "")),
+            r"Table 1 : Both REPLUG and REPLUG LSR consistently enhanced the performance of different language models\..*?original language model\.\s*",
+            "",
+        ).strip()
+
+    if paper_id == "paper-014":
+        if 9 in by_order:
+            text = str(by_order[9].get("text", ""))
+            text = _clean_inline_block(text, r"Figure 9 : .*?slightly decreases\.\s*", "")
+            text = _clean_inline_block(text, r"Figure 10 : .*?performance trends\.\s*", "")
+            by_order[9]["text"] = text.strip()
+        if 15 in by_order:
+            text = str(by_order[15].get("text", ""))
+            text = re.sub(r"^Multi-Document QA\s*", "", text)
+            text = _clean_inline_block(
+                text,
+                r"Figure 13 : .*?rather than retrieved distractors\.\s*",
+                "",
+            )
+            text = _clean_inline_block(
+                text,
+                r"Figure 14 presents the results of this experiment\..*?Figure 14 : .*?the prompt\.\s*",
+                "Figure 14 presents the results of this experiment. ",
+            )
+            by_order[15]["text"] = text.strip()
+        if 17 in by_order:
+            text = str(by_order[17].get("text", ""))
+            text = _clean_inline_block(
+                text,
+                r"with and without additional Figure 15 : .*?input context\.\s*Figure 16 : .*?models\.\s*supervised fine-tuning",
+                "with and without additional supervised fine-tuning",
+            )
+            by_order[17]["text"] = text.strip()
+
+    if paper_id == "paper-019":
+        if 2 in by_order:
+            by_order[2]["text"] = _clean_inline_block(
+                str(by_order[2].get("text", "")),
+                r"Figure 2 : Overview of our RAFT method\..*?At test time, all methods follow the standard RAG setting, provided with a top-k retrieved documents in the context\.\s*",
+                "",
+            ).strip()
+        if 15 in by_order:
+            by_order[15]["text"] = _clean_inline_block(
+                str(by_order[15].get("text", "")),
+                r"Figure 2 : RAG-Token document posterior .*?The posterior for document 1 is high when generating \"A Farewell to Arms\" and for document 2 when generating \"The Sun Also Rises\"\.\s*",
+                "",
+            ).strip()
+        if 7 in by_order:
+            by_order[7]["text"] = _clean_inline_block(
+                str(by_order[7].get("text", "")),
+                r"Question: The Oberoi family .*?Table 1 : RAFT improves RAG performance for all specialized domains: .*?$",
+                "",
+            ).strip()
+
+    if paper_id == "paper-021" and 6 in by_order:
+        by_order[6]["text"] = _clean_inline_block(
+            str(by_order[6].get("text", "")),
+            r"DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads .*?Figure 6 : .*?GQA model\.\s*",
+            "",
+        ).strip()
+
+    if paper_id == "paper-022":
+        if 11 in by_order:
+            text = str(by_order[11].get("text", ""))
+            text = _clean_inline_block(
+                text,
+                r"We Method MRR@10 .*?Table 2 : End-to-end retrieval results on MS MARCO\..*?document collection\.\s*compare against KNRM",
+                "We compare against KNRM",
+            )
+            by_order[11]["text"] = text.strip()
+        if 14 in by_order:
+            by_order[14]["text"] = _clean_inline_block(
+                str(by_order[14].get("text", "")),
+                r"Figure 6 Table 4 : Space Footprint vs MRR@10 \(Dev\) on MS MARCO\.\s*",
+                "",
+            ).strip()
+
+    if paper_id == "paper-025":
+        if 0 in by_order and 1 in by_order:
+            continuation = str(by_order[1].get("text", ""))
+            continuation = _clean_inline_block(
+                continuation,
+                r"^Step 1: Retrieve K documents .*?Some states including Texas and Utah, are named after\s*",
+                "",
+            )
+            by_order[0]["text"] = (
+                str(by_order[0].get("text", "")).rstrip()
+                + " left), which "
+                + continuation.lstrip()
+            ).strip()
+            sections = [section for section in sections if int(section.get("order_in_paper", -1)) != 1]
+        if 2 in by_order:
+            by_order[2]["text"] = _clean_inline_block(
+                str(by_order[2].get("text", "")),
+                r"^x, y \{5, 4, 3, 2, 1\} y is a useful response to x\.\s*Table 1 : .*?x, y, d indicate input, output, and a relevant passage, respectively\.\s*",
+                "",
+            ).strip()
+        for order, table_num in ((32, 8), (34, 9)):
+            if order in by_order:
+                by_order[order]["text"] = _clean_inline_block(
+                    str(by_order[order].get("text", "")),
+                    rf"Table {table_num} : .*",
+                    "",
+                ).strip()
+
+    if paper_id == "paper-026" and 3 in by_order:
+        by_order[3]["text"] = _clean_inline_block(
+            str(by_order[3].get("text", "")),
+            r"For each example \(x i , y i \) ∈ Table 1 : .*?\. D L , we retrieve",
+            "For each example (x_i, y_i) in D_L, we retrieve",
+        ).strip()
+
+    if paper_id == "paper-027":
+        if 4 in by_order:
+            text = str(by_order[4].get("text", ""))
+            text = _clean_inline_block(
+                text,
+                r"Figure 4 : Querying Process: .*?higher-layer summaries\.\s*our results demonstrate",
+                "our results demonstrate",
+            )
+            text = _clean_inline_block(
+                text,
+                r"Table 1 : NarrativeQA Performance .*?Likewise, in the QuALITY dataset as shown in Table 4 ,",
+                "Likewise, in the QuALITY dataset as shown in Table 4,",
+            )
+            text = _clean_inline_block(
+                text,
+                r"Table 3 : Controlled comparison of F-1 scores on the QASPER dataset,.*?$",
+                "",
+            )
+            by_order[4]["text"] = text.strip()
+        if 6 in by_order:
+            text = str(by_order[6].get("text", ""))
+            text = _clean_inline_block(
+                text,
+                r"Table 6 : Performance comparison .*?Kočiskỳ et al\., 2018\) 6\.2 5\.7 0\.3 3\.7 BM25 \+ BERT .*?Recursively Summarizing Books \(Wu et al\., 2021\) 21\s*",
+                "",
+            )
+            by_order[6]["text"] = text.strip()
+        if 14 in by_order:
+            by_order[14]["text"] = _clean_inline_block(
+                str(by_order[14].get("text", "")),
+                r"Table 9 : Ablation study results comparing RAPTOR with a recency-based tree approach\s*",
+                "",
+            ).strip()
+
+    if paper_id == "paper-029":
+        if 0 in by_order:
+            by_order[0]["text"] = _clean_inline_block(
+                str(by_order[0].get("text", "")),
+                r"Figure 1 : Overview of our approach\..*?",
+                "",
+            ).strip()
+        if 15 in by_order:
+            by_order[15]["text"] = _clean_inline_block(
+                str(by_order[15].get("text", "")),
+                r"Figure 2 : RAG-Token document posterior .*?The posterior for document 1 is high when generating \"A Farewell to Arms\" and for document 2 when generating \"The Sun Also Rises\"\.\s*",
+                "",
+            ).strip()
+
+    if paper_id == "paper-030" and 25 in by_order:
+        extra_orders = [26, 27, 28, 29, 30, 31]
+        extra_chunks: list[str] = []
+        for order in extra_orders:
+            if order not in by_order:
+                continue
+            text = str(by_order[order].get("text", ""))
+            text = _clean_inline_block(text, r"^Figure \d+ : .*?\n?", "")
+            text = text.replace("RAG w/o Retrieval xRAG", "")
+            text = text.replace("Background: [X]", "")
+            extra_chunks.append(text.strip())
+        merged = str(by_order[25].get("text", "")).rstrip()
+        if extra_chunks:
+            merged = f"{merged}\n" + "\n".join(chunk for chunk in extra_chunks if chunk)
+        by_order[25]["text"] = merged.strip()
+        sections = [section for section in sections if int(section.get("order_in_paper", -1)) not in set(extra_orders)]
+
+    return _reindex_sections(
+        paper_id,
+        [section for section in sections if isinstance(section, dict)],
+    )
+
+
 def repair_payload(payload: dict[str, object], paper_id: str, pdf_path: Path) -> dict[str, object]:
     metadata = payload["metadata"]
     sections = payload["sections"]
@@ -548,6 +977,24 @@ def repair_payload(payload: dict[str, object], paper_id: str, pdf_path: Path) ->
             section["section_title"] = overrides[order]
         elif title.islower():
             section["section_title"] = title.title()
+
+    sections = _apply_known_payload_repairs(metadata, sections, paper_id)
+    if paper_id == "paper-017":
+        repaired_titles = {
+            0: "Introduction",
+            1: "Empirical Studies",
+            2: "Empirical Studies",
+            3: "How Well Can LLMs Rank Candidates in a Zero-Shot Setting?",
+            4: "How Well Can LLMs Rank Candidates in a Zero-Shot Setting?",
+            5: "Related Work",
+            6: "Conclusion",
+            7: "Limitations",
+        }
+        for section in sections:
+            order = int(section.get("order_in_paper", -1))
+            if order in repaired_titles:
+                section["section_title"] = repaired_titles[order]
+    payload["sections"] = sections
 
     metadata["section_titles"] = [
         str(section["section_title"])

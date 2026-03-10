@@ -39,7 +39,10 @@ class PaperIndex:
         metadatas: list[dict[str, object]] = []
         doc_ids: list[str] = []
         for paper in papers:
-            retrieval_text = f"{paper.title} {paper.abstract} {' '.join(paper.keywords)}".strip()
+            authors_text = " ".join(paper.authors)
+            year_text = str(paper.year) if paper.year is not None else ""
+            venue_text = paper.venue or ""
+            retrieval_text = f"{paper.title} {authors_text} {year_text} {venue_text} {paper.abstract} {' '.join(paper.keywords)}".strip()
             texts.append(retrieval_text)
             metadatas.append({"paper_id": paper.paper_id})
             doc_ids.append(paper.paper_id)
