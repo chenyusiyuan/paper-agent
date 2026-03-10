@@ -13,10 +13,14 @@ def make_chunk(paper_id: str, section_type: str, order: int, text: str) -> Secti
         paper_id=paper_id,
         section_type=section_type,
         section_title=title,
+        section_path=title,
         text=text,
         page_start=0,
         page_end=0,
         order_in_paper=order,
+        level=1,
+        parent_chunk_id=None,
+        granularity="fine",
     )
 
 

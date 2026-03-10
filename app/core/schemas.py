@@ -36,10 +36,14 @@ class SectionChunk:
     paper_id: str
     section_type: str
     section_title: str
+    section_path: str
     text: str
     page_start: int
     page_end: int
     order_in_paper: int
+    level: int
+    parent_chunk_id: str | None
+    granularity: str
 
 
 @dataclass
