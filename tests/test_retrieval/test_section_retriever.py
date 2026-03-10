@@ -70,30 +70,26 @@ class StubSectionIndex:
 
 class StubReranker:
     def rerank(self, query: str, passages: list[str], top_k: int = 5) -> list[tuple[int, float]]:
-        assert query == "training details"
-        # reranker favors method_2 (idx 0) then experiment_3 (idx 1)
         return [(0, 0.9), (1, 0.8)][:top_k]
 
 
 def test_section_retriever_filters_by_paper_and_section() -> None:
-    """Full pipeline: filter → search → RRF → rerank. Candidate count (4) > top_k (2)."""
+    """Full pipeline without target_sections still uses search → RRF → rerank."""
     retriever = SectionRetriever(StubSectionIndex(), StubReranker())  # type: ignore[arg-type]
 
     results = retriever.retrieve(
         "training details",
         paper_id="paper-1",
-        target_sections=["method", "experiment"],
         top_k=2,
     )
 
-    # Reranker returns idx 0 (method_2) then idx 1 (experiment_3) from the fused list.
     assert len(results) == 2
     assert results[0].section_type == "method"
     assert results[1].section_type == "experiment"
 
 
-def test_section_retriever_short_circuit_when_candidates_small() -> None:
-    """When candidate count (2) <= top_k (3), return immediately without search/rerank."""
+def test_section_retriever_target_sections_returns_in_document_order() -> None:
+    """When target_sections is set, return matching chunks in document order."""
     retriever = SectionRetriever(StubSectionIndex(), StubReranker())  # type: ignore[arg-type]
 
     results = retriever.retrieve(
@@ -105,3 +101,44 @@ def test_section_retriever_short_circuit_when_candidates_small() -> None:
 
     assert len(results) == 2
     assert all(chunk.section_type == "method" for chunk in results)
+    assert [chunk.order_in_paper for chunk in results] == [2, 6]
+
+
+class SmallSectionIndex:
+    def __init__(self) -> None:
+        self.chunks = [
+            make_chunk("paper-1", "abstract", 0, "summary"),
+            make_chunk("paper-1", "method", 1, "training details"),
+        ]
+        self.chunk_by_id = {chunk.chunk_id: chunk for chunk in self.chunks}
+
+    def get_by_paper(self, paper_id: str) -> list[SectionChunk]:
+        return [chunk for chunk in self.chunks if chunk.paper_id == paper_id]
+
+    def search_dense(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
+        return [("paper-1_abstract_0", 0.9), ("paper-1_method_1", 0.8)]
+
+    def search_sparse(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
+        return []
+
+    def get_by_id(self, chunk_id: str) -> SectionChunk | None:
+        return self.chunk_by_id.get(chunk_id)
+
+
+class SmallStubReranker:
+    def rerank(self, query: str, passages: list[str], top_k: int = 5) -> list[tuple[int, float]]:
+        return [(1, 0.9), (0, 0.8)][:top_k]
+
+
+def test_section_retriever_reranks_when_no_target_sections_and_few_candidates() -> None:
+    retriever = SectionRetriever(SmallSectionIndex(), SmallStubReranker())  # type: ignore[arg-type]
+
+    results = retriever.retrieve(
+        "training details",
+        paper_id="paper-1",
+        top_k=5,
+    )
+
+    assert len(results) == 2
+    assert results[0].section_type == "method"
+    assert results[1].section_type == "abstract"

@@ -31,8 +31,18 @@ class SectionRetriever:
 
         if not candidates:
             return []
-        if len(candidates) <= top_k:
+        if target_sections:
             return candidates[:top_k]
+        if len(candidates) == 1:
+            return candidates
+        if len(candidates) <= top_k:
+            passages = [chunk.text for chunk in candidates]
+            reranked = self.reranker.rerank(query, passages, top_k=len(candidates))
+            return [
+                candidates[index]
+                for index, _ in reranked
+                if 0 <= index < len(candidates)
+            ]
 
         candidate_ids = {chunk.chunk_id for chunk in candidates}
         dense = [
